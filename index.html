@@ -81,6 +81,8 @@ textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.84rem;color:var(--muted);margin:10px 0 0}
 .legend .miss{text-decoration:underline wavy var(--pen);text-underline-offset:4px}
 .legend .amb{background:linear-gradient(transparent 40%,var(--mark) 40%)}
+.target .frame{color:var(--muted);font-style:italic}
+.frame-hint{font-size:.84rem;color:var(--muted);margin:8px 0 0}
 
 .mic{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:64px;margin:16px 0 10px;
   font:inherit;font-size:1.1rem;font-weight:600;border-radius:12px;border:0;cursor:pointer;
@@ -181,7 +183,7 @@ const Store = (() => {
 
 /* ---------- State ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9, ttsProvider: 'browser', googleVoice: 'female' };
+const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9, ttsProvider: 'browser', googleVoice: 'female', recordSelf: 'on', frame: 'on' };
 let data = { script: '', items: [], pos: 0, results: {}, history: {}, stats: {}, settings: { ...DEFAULT_SETTINGS } };
 let view = 'script';
 let rec = null, listening = false, liveText = '', lastError = '';
@@ -189,6 +191,7 @@ let saveTimer = null;
 let focusWord = null, focusResult = null; // temporary word-only drill
 let googleTtsKey = ''; // 메모리에서만 사용, 영구 저장하지 않음
 let ttsAudio = null, ttsUrl = null, ttsRequest = null, ttsSeq = 0;
+let mediaStream = null, mediaRec = null, recChunks = [], myAudioUrl = null, myAudioFor = '', mineAudio = null;
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -236,10 +239,23 @@ function splitItems(text) {
 function tokens(s) { return String(s || '').match(/[^\s\-–—]+[\-–—]?/g) || []; }
 const NUM = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen','twenty'];
 const ALIAS = { mr: 'mister', mrs: 'missus', dr: 'doctor', ok: 'okay' };
+// 발음이 같은 단어는 같은 단어로 취급 (각 묶음의 첫 단어가 대표). 최소대립쌍(right/light 등)은 넣지 말 것.
+const HOMOPHONES = [
+  ['right','write','rite','wright'], ['two','to','too'], ['four','for','fore'], ['one','won'], ['eight','ate'],
+  ['there','their',"they're"], ['know','no'], ['knew','new'], ['hear','here'], ['see','sea'], ['buy','by','bye'],
+  ['meet','meat'], ['week','weak'], ['peace','piece'], ['whole','hole'], ['weather','whether'], ['son','sun'],
+  ['flower','flour'], ['mail','male'], ['sale','sail'], ['tail','tale'], ['road','rode','rowed'], ['blue','blew'],
+  ['where','wear'], ['which','witch'], ['berry','bury'], ['light','lite'], ['night','knight'], ['hour','our'],
+  ['wait','weight'], ['made','maid'], ['pair','pear','pare'], ['plain','plane'], ['break','brake'],
+  ['its',"it's"], ['your',"you're"]
+];
+const HOMO = {};
+HOMOPHONES.forEach(g => g.forEach(w => { HOMO[w] = g[0]; }));
 function norm(w) {
   let x = w.replace(/[’‘]/g, "'").toLowerCase().replace(/[^\p{L}\p{N}']/gu, '').replace(/^'+|'+$/g, '');
   if (/^\d+$/.test(x) && +x <= 20) x = NUM[+x];
-  return ALIAS[x] || x;
+  x = ALIAS[x] || x;
+  return HOMO[x] || x;
 }
 // Minimum edit-distance alignment: identifies exact matches, substitutions, omissions, and insertions.
 function alignWords(A, B) {
@@ -285,17 +301,28 @@ function scoreReading(target, alts) {
     score,ok,amb,real, extras,
     omitted:marks.filter(m=>m==='miss').length, substituted:marks.filter(m=>m==='replace').length};
 }
+const FRAME = ['Say', 'again'];
+function useFrame(t) { return data.settings.frame === 'on' && tokens(t).length === 1; }
+function spokenText(t) { return useFrame(t) ? `${FRAME[0]} ${t} ${FRAME[1]}.` : t; }
+// 단어 항목은 "Say ___ again"으로 읽게 하고, 가운데 단어만 채점
+function scoreItem(text, alts) {
+  if (!useFrame(text)) return scoreReading(text, alts);
+  const r = scoreReading(`${FRAME[0]} ${text} ${FRAME[1]}`, alts), m = r.marks[1];
+  return { ...r, marks: [m], replacements: [r.replacements[1]], score: m === 'ok' ? 100 : 0,
+    ok: +(m === 'ok'), amb: +(m === 'amb'), real: 1, extras: 0,
+    omitted: +(m === 'miss'), substituted: +(m === 'replace'), framed: true };
+}
 function evaluate(i, alts) {
-  const r=scoreReading(data.items[i],alts);
-  trackWords(tokens(data.items[i]),r.marks);
-  const history=data.history||(data.history={});
-  (history[i]||(history[i]=[])).push({score:r.score,ok:r.ok,real:r.real,at:Date.now()});
-  data.results[i]=r;
+  const r = scoreItem(data.items[i], alts);
+  trackWords(tokens(data.items[i]), r.marks);
+  const history = data.history || (data.history = {});
+  (history[i] || (history[i] = [])).push({ score: r.score, ok: r.ok, real: r.real, at: Date.now() });
+  data.results[i] = r;
   scheduleSave();
 }
-function evaluateFocus(word,alts){
-  focusResult=scoreReading(word,alts);
-  trackWords(tokens(word),focusResult.marks);
+function evaluateFocus(word, alts) {
+  focusResult = scoreItem(word, alts);
+  trackWords(tokens(word), focusResult.marks);
   scheduleSave();
 }
 
@@ -313,10 +340,50 @@ const ERR = {
   'network': '음성인식 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.',
   'language-not-supported': '선택한 영어 종류를 이 기기에서 인식할 수 없어요. 연습 화면 아래에서 다른 영어를 골라 주세요.'
 };
+
+/* ---------- 내 목소리 녹음 ---------- */
+function startRecording() {
+  if (data.settings.recordSelf !== 'on' || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    if (!listening) { stream.getTracks().forEach(t => t.stop()); return; }
+    mediaStream = stream; recChunks = [];
+    mediaRec = new MediaRecorder(stream);
+    mediaRec.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+    mediaRec.start();
+  }).catch(() => { mediaStream = null; mediaRec = null; });
+}
+function stopRecording(tag) {
+  return new Promise(resolve => {
+    const mr = mediaRec, stream = mediaStream; mediaRec = null; mediaStream = null;
+    const done = () => { if (stream) stream.getTracks().forEach(t => t.stop()); resolve(); };
+    if (!mr || mr.state === 'inactive') { done(); return; }
+    mr.onstop = () => {
+      if (recChunks.length) {
+        if (myAudioUrl) URL.revokeObjectURL(myAudioUrl);
+        myAudioUrl = URL.createObjectURL(new Blob(recChunks, { type: mr.mimeType || 'audio/mp4' }));
+        myAudioFor = tag;
+      }
+      done();
+    };
+    try { mr.stop(); } catch (e) { done(); }
+  });
+}
+function clearMine() {
+  if (mineAudio) { mineAudio.pause(); mineAudio = null; }
+  if (myAudioUrl) URL.revokeObjectURL(myAudioUrl);
+  myAudioUrl = null; myAudioFor = '';
+}
+function playMine() {
+  if (!myAudioUrl) return;
+  stopTts();
+  mineAudio = new Audio(myAudioUrl);
+  mineAudio.play().catch(() => toast('녹음을 재생하지 못했어요.'));
+}
+
 function startListening() {
   const block = micBlocker(); if (block) { toast(block); return; }
-  speechSynthesis && speechSynthesis.cancel();
-  const i = data.pos, activeWord = focusWord;
+  stopTts();
+  const i = data.pos, activeWord = focusWord, tag = activeWord ? `w:${activeWord}` : `s:${i}`;
   rec = new SR();
   rec.lang = data.settings.lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = false;
   let finals = null; liveText = ''; lastError = '';
@@ -335,15 +402,16 @@ function startListening() {
     listening = false; rec = null;
     if (!finals && liveText) finals = [liveText];
     if (finals && finals[0]) {
-      const candidates=[...new Set(finals.filter(Boolean))];
-      if(activeWord) evaluateFocus(activeWord,candidates); else evaluate(i,candidates);
+      const candidates = [...new Set(finals.filter(Boolean))];
+      if (activeWord) evaluateFocus(activeWord, candidates); else evaluate(i, candidates);
     }
     else if (lastError) toast(lastError);
     else toast('인식된 말이 없어요. 다시 한 번 읽어 주세요.');
     if (view === 'practice') render();
+    stopRecording(tag).then(() => { if (view === 'practice' && !listening) render(); });
   };
-  try { rec.start(); listening = true; render(); }
-  catch (e) { listening = false; toast('음성인식을 시작하지 못했어요. 잠시 후 다시 눌러 주세요.'); }
+  try { rec.start(); listening = true; startRecording(); render(); }
+  catch (e) { listening = false; stopRecording(tag); toast('음성인식을 시작하지 못했어요. 잠시 후 다시 눌러 주세요.'); }
 }
 function stopListening() { if (rec) rec.stop(); }
 
@@ -353,6 +421,7 @@ function stopTts() {
   if (ttsRequest) { ttsRequest.abort(); ttsRequest = null; }
   if (ttsAudio) { ttsAudio.pause(); ttsAudio.removeAttribute('src'); ttsAudio.load(); ttsAudio = null; }
   if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; }
+  if (mineAudio) { mineAudio.pause(); mineAudio = null; }
   if ('speechSynthesis' in window) speechSynthesis.cancel();
 }
 function browserSpeak(text) {
@@ -424,7 +493,7 @@ function renderScript() {
   const block = micBlocker();
   return `${block ? `<div class="notice">${esc(block)}</div>` : ''}
     <h1>읽을 스크립트</h1>
-    <p class="muted">영어 글을 붙여넣으면 문장 단위로 나눠요. 단어 하나씩 시험하려면 한 줄에 하나씩 적으세요. 문맥이 없을수록 판정이 엄격해져요.</p>
+    <p class="muted">영어 글을 붙여넣으면 문장 단위로 나눠요. 단어 하나씩 시험하려면 한 줄에 하나씩 적으세요. 단어는 기본적으로 "Say ___ again." 틀 문장에 넣어 읽어요.</p>
     <label class="f" for="script">스크립트</label>
     <textarea id="script" lang="en" spellcheck="false" placeholder="여기에 영어 문장이나 단어를 붙여넣으세요">${esc(data.script)}</textarea>
     <div class="row" style="margin-top:16px">
@@ -451,14 +520,15 @@ function heardHTML(r) {
 function renderPractice() {
   if (!data.items.length) return `<h1>연습할 스크립트가 없어요</h1><p class="muted">먼저 읽을 문장이나 단어를 넣어 주세요.</p>
     <button class="btn primary" data-act="go" data-to="script">스크립트 넣기</button>`;
-  const i = data.pos, r = data.results[i], block = micBlocker();
+  const i = data.pos, r = data.results[i], block = micBlocker(), framed = useFrame(data.items[i]);
   const completed=Object.keys(data.results).filter(k=>Number(k)<data.items.length).length;
   const scores=Object.values(data.results).map(r=>r.score);
   const average=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):null;
   const history=data.history?.[i]||[];
   const focusPanel=focusWord ? `<div class="focus-panel" aria-live="polite"><div class="row"><b lang="en">${esc(focusWord)}</b><span class="small muted">단어 집중 연습</span></div>
+      ${useFrame(focusWord)?`<p class="small muted"><span lang="en">“${FRAME[0]} <b>${esc(focusWord)}</b> ${FRAME[1]}.”</span>처럼 읽어 주세요.</p>`:''}
       ${focusResult?`<p class="small">인식 결과: <b lang="en">${esc(focusResult.heard)}</b> · ${focusResult.score===100?'일치':'다르게 인식됨'}</p>`:''}
-      <div class="row"><button class="btn" data-act="focus-speak">단어 듣기</button><button class="btn primary" data-act="focus-mic">${listening?'녹음 종료':'단어만 읽기'}</button><button class="btn quiet" data-act="focus-close">닫기</button></div></div>`:'';
+      <div class="row"><button class="btn" data-act="focus-speak">단어 듣기</button>${!listening && myAudioUrl && myAudioFor===`w:${focusWord}`?'<button class="btn" data-act="play-mine">내 목소리 듣기</button>':''}<button class="btn primary" data-act="focus-mic">${listening?'녹음 종료':'단어만 읽기'}</button><button class="btn quiet" data-act="focus-close">닫기</button></div></div>`:'';
   let heard;
   if (listening) heard = `<span class="lbl">인식 중</span><span class="txt live" id="live" aria-live="polite">${esc(liveText) || '듣는 중…'}</span>`;
   else if (r) heard = `<span class="lbl">기기가 들은 말</span><span class="txt" lang="en">${heardHTML(r)}</span>
@@ -474,9 +544,11 @@ function renderPractice() {
     <div class="summary-strip"><span>완료 <b>${completed}/${data.items.length}</b></span><span>평균 일치율 <b>${average===null?'—':average+'%'}</b></span><span>재연습 대상 <b>${scores.filter(s=>s<90).length}</b></span></div>
     <div class="progress-track" role="progressbar" aria-label="연습 완료율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(completed/data.items.length*100)}"><i style="width:${completed/data.items.length*100}%"></i></div>
     <div class="sheet">
-      <p class="target" lang="en">${targetHTML(i)}</p>
+      <p class="target" lang="en">${framed ? `<span class="frame">${FRAME[0]}</span> ${targetHTML(i)} <span class="frame">${FRAME[1]}.</span>` : targetHTML(i)}</p>
+      ${framed ? `<p class="frame-hint">회색 글자까지 한 문장으로 읽어 주세요. 점수는 가운데 단어만 봐요.</p>` : ''}
       <div class="heard">${heard}</div>
       ${r && !listening ? `<div class="legend"><span><span class="miss">물결 밑줄</span> 다르게 인식된 단어</span><span><span class="amb">형광펜</span> 다른 후보로는 맞게 들린 단어</span></div>` : ''}
+      ${!listening && myAudioUrl && myAudioFor === `s:${i}` ? `<div class="row" style="margin-top:12px"><button class="btn" data-act="play-mine">내 목소리 듣기</button><button class="btn" data-act="speak">원문 듣기</button></div>` : ''}
     </div>
     ${focusPanel}
     ${history.length?`<div class="history small"><b>이 문장 연습 기록 (${history.length}회)</b><div class="history-entries">${history.slice(-8).map((h,k)=>`<span class="history-pill">${Math.max(1,history.length-7)+k}회 ${h.score}%</span>`).join('')}</div><span class="muted">최초 ${history[0].score}% → 최근 ${history[history.length-1].score}% (${history[history.length-1].score-history[0].score>=0?'+':''}${history[history.length-1].score-history[0].score}%p)</span></div>`:''}
@@ -486,7 +558,7 @@ function renderPractice() {
       <button class="btn" data-act="speak">원문 듣기</button>
       <button class="btn" data-act="next" ${i === data.items.length - 1 ? 'disabled' : ''}>다음</button>
     </div>
-    <p class="muted small" style="margin-top:12px">맞게 인식됐다고 발음이 완벽하다는 뜻은 아니에요. 다르게 인식된 단어를 원문 듣기와 비교해 보세요.</p>
+    <p class="muted small" style="margin-top:12px">맞게 인식됐다고 발음이 완벽하다는 뜻은 아니에요. 억양과 리듬은 '내 목소리 듣기'와 '원문 듣기'를 번갈아 들으며 비교해 보세요.</p>
     <div id="google-audio-fallback" hidden aria-label="Google 음성 수동 재생"></div>
     <h2>설정</h2>
     <div class="panel">
@@ -509,6 +581,14 @@ function renderPractice() {
       </select></label>
       <label class="setting"><span>원문 읽어 주는 속도</span><select data-setting="ttsRate">
         ${[[0.7, '느리게'], [0.9, '조금 느리게'], [1, '보통']].map(([v, n]) => `<option value="${v}" ${data.settings.ttsRate === v ? 'selected' : ''}>${n}</option>`).join('')}
+      </select></label>
+      <label class="setting"><span>단어 읽기 방식</span><select data-setting="frame">
+        <option value="on" ${data.settings.frame === 'on' ? 'selected' : ''}>틀 문장 (Say ___ again)</option>
+        <option value="off" ${data.settings.frame === 'off' ? 'selected' : ''}>단어만</option>
+      </select></label>
+      <label class="setting"><span>내 목소리 녹음</span><select data-setting="recordSelf">
+        <option value="on" ${data.settings.recordSelf === 'on' ? 'selected' : ''}>켜기</option>
+        <option value="off" ${data.settings.recordSelf === 'off' ? 'selected' : ''}>끄기</option>
       </select></label>
     </div>
     <h2>전체 항목</h2>
@@ -545,7 +625,7 @@ function go(v) { focusWord=null; focusResult=null; if (listening) stopListening(
 function startScript(text) {
   const items = splitItems(text);
   if (!items.length) { toast('먼저 읽을 영어 문장이나 단어를 넣어 주세요.'); return; }
-  data.script = text; data.items = items; data.pos = 0; data.results = {}; data.history = {}; focusWord=null; focusResult=null;
+  data.script = text; data.items = items; data.pos = 0; data.results = {}; data.history = {}; focusWord=null; focusResult=null; clearMine();
   scheduleSave(); go('practice');
 }
 const actions = {
@@ -560,7 +640,8 @@ const actions = {
   prev: () => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = Math.max(0, data.pos - 1); scheduleSave(); render(); },
   next: () => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = Math.min(data.items.length - 1, data.pos + 1); scheduleSave(); render(); },
   jump: el => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = +el.dataset.i; scheduleSave(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); },
-  speak: () => speak(data.items[data.pos]),
+  speak: () => speak(spokenText(data.items[data.pos])),
+  'play-mine': () => playMine(),
   drill: () => {
     const words = Object.values(data.stats).filter(s => s.miss > 0)
       .sort((a, b) => b.miss / b.tries - a.miss / a.tries || b.miss - a.miss).slice(0, 10).map(s => s.word);
@@ -572,7 +653,10 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = actions[el.dataset.act]; if (fn) { e.preventDefault(); fn(el); }
 });
-document.addEventListener('input', e => { if (e.target.id === 'script') { data.script = e.target.value; scheduleSave(); } });
+document.addEventListener('input', e => {
+  if (e.target.id === 'script') { data.script = e.target.value; scheduleSave(); }
+  if (e.target.id === 'google-tts-key') googleTtsKey = e.target.value;
+});
 document.addEventListener('change', e => {
   const k = e.target.dataset.setting; if (!k) return;
   data.settings[k] = k === 'ttsRate' ? Number(e.target.value) : e.target.value;
