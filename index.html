@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#EEF1F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121821" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="발음 체크">
+<title>발음 체크</title>
+<style>
+:root{
+  --paper:#EEF1F4; --surface:#FFFFFF; --ink:#1B2A41; --muted:#5E6B7D; --line:#D5DCE4;
+  --accent:#2B4C7E; --accent-ink:#FFFFFF; --mark:#F7DC5A; --pen:#C8423B; --ok:#2F7D5B; --field:#F7F9FB;
+  --en:"Iowan Old Style","Charter","Georgia","Times New Roman",serif;
+  --ui:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#121821; --surface:#1B2330; --ink:#E6EBF2; --muted:#94A1B3; --line:#2C3746;
+    --accent:#8FB0E0; --accent-ink:#0F1722; --mark:rgba(247,220,90,.38); --pen:#F08A80; --ok:#7CC7A0; --field:#151C27; }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 var(--ui);min-height:100vh}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:4px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+header{position:sticky;top:0;z-index:10;background:var(--paper);border-bottom:1px solid var(--line);
+  padding:calc(env(safe-area-inset-top) + 10px) 16px 0}
+.head-in{max-width:760px;margin:0 auto}
+.brand{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+.brand b{font-size:1.15rem}
+.brand span{font-family:var(--en);font-style:italic;color:var(--muted);font-size:.95rem}
+nav{display:flex;gap:4px}
+nav button{appearance:none;border:0;background:none;color:var(--muted);font:inherit;font-size:.95rem;
+  padding:10px 12px;min-height:44px;cursor:pointer;border-bottom:3px solid transparent}
+nav button[aria-current="page"]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
+
+main{max-width:760px;margin:0 auto;padding:24px 16px calc(env(safe-area-inset-bottom) + 64px)}
+h1{font-size:1.5rem;line-height:1.3;margin:0 0 8px}
+h2{font-size:1rem;margin:32px 0 10px;color:var(--muted);font-weight:600}
+p{margin:0 0 12px}
+.muted{color:var(--muted)}
+.small{font-size:.875rem}
+
+.btn{appearance:none;font:inherit;font-size:.95rem;min-height:44px;padding:8px 16px;border-radius:8px;
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.quiet{border-color:transparent;background:none;color:var(--muted)}
+.btn.danger{color:var(--pen)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+label.f{display:block;font-size:.875rem;color:var(--muted);margin:16px 0 6px}
+textarea,select{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--field);
+  border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+textarea{min-height:14em;resize:vertical;font-family:var(--en);font-size:1.05rem;line-height:1.55}
+select{width:auto;min-height:44px}
+textarea:focus,select:focus{outline:none;border-color:var(--accent)}
+
+.notice{background:var(--surface);border:1px dashed var(--pen);border-radius:8px;padding:10px 12px;font-size:.92rem;margin-bottom:18px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:4px 16px;margin-top:8px}
+.setting{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-top:1px solid var(--line)}
+.setting:first-child{border-top:0}
+
+/* Practice: the read-aloud sheet */
+.progress{display:flex;justify-content:space-between;color:var(--muted);font-size:.875rem;margin-bottom:10px;font-variant-numeric:tabular-nums}
+.sheet{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px 20px 18px}
+.target{font-family:var(--en);font-size:clamp(1.4rem,4.5vw,2rem);line-height:1.55;margin:0;word-break:break-word}
+.target .w{padding:0 .02em}
+.target .miss{text-decoration:underline wavy var(--pen);text-decoration-thickness:2px;text-underline-offset:6px;text-decoration-skip-ink:none}
+.target .amb{background:linear-gradient(transparent 40%,var(--mark) 40%,var(--mark) 92%,transparent 92%)}
+.heard{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--line);min-height:2.4em}
+.heard .lbl{font-size:.8rem;color:var(--muted);display:block;margin-bottom:2px}
+.heard .txt{font-family:var(--en);font-size:1.1rem}
+.heard .txt.live{color:var(--muted);font-style:italic}
+.heard .extra{text-decoration:underline wavy var(--pen);text-underline-offset:4px;text-decoration-skip-ink:none}
+.verdict{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px;font-size:.9rem;color:var(--muted)}
+.verdict b{color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.84rem;color:var(--muted);margin:10px 0 0}
+.legend .miss{text-decoration:underline wavy var(--pen);text-underline-offset:4px}
+.legend .amb{background:linear-gradient(transparent 40%,var(--mark) 40%)}
+
+.mic{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:64px;margin:16px 0 10px;
+  font:inherit;font-size:1.1rem;font-weight:600;border-radius:12px;border:0;cursor:pointer;
+  background:var(--accent);color:var(--accent-ink)}
+.mic.on{background:var(--pen);color:#fff}
+.mic .dot{width:12px;height:12px;border-radius:50%;background:currentColor;opacity:.9}
+@media (prefers-reduced-motion:no-preference){ .mic.on .dot{animation:beat 1s ease-in-out infinite} }
+@keyframes beat{50%{transform:scale(.55);opacity:.5}}
+.nav3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+
+.items{margin-top:28px;border-top:1px solid var(--line)}
+.it{display:flex;gap:12px;align-items:baseline;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);
+  padding:12px 4px;font:inherit;color:var(--ink);cursor:pointer}
+.it .n{color:var(--muted);font-size:.8rem;min-width:24px;font-variant-numeric:tabular-nums}
+.it .t{flex:1;font-family:var(--en);font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.it .s{font-size:.85rem;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.it .s.good{color:var(--ok)} .it .s.bad{color:var(--pen)}
+.it[aria-current="true"]{background:var(--surface)}
+
+/* Weak words */
+.weak{display:grid;grid-template-columns:minmax(90px,auto) 1fr auto;gap:6px 14px;align-items:center;
+  padding:12px 0;border-top:1px solid var(--line)}
+.weak:first-child{border-top:0}
+.weak .word{font-family:var(--en);font-size:1.15rem}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--pen)}
+.weak .cnt{font-size:.85rem;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 20px);transform:translateX(-50%);
+  background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:8px;font-size:.92rem;z-index:60;max-width:calc(100% - 32px)}
+</style>
+</head>
+<body>
+<header>
+  <div class="head-in">
+    <div class="brand"><b>발음 체크</b><span>say it, see what it heard</span></div>
+    <nav aria-label="메뉴">
+      <button data-act="go" data-to="script">스크립트</button>
+      <button data-act="go" data-to="practice">연습</button>
+      <button data-act="go" data-to="weak">약한 단어</button>
+    </nav>
+  </div>
+</header>
+<main id="main"></main>
+
+<script>
+/* ---------- Storage adapter (Claude app storage, then localStorage, then memory) ---------- */
+const KEY = 'pron-check-v1';
+const Store = (() => {
+  let mode = 'memory', mem = null, busy = false, pending = null;
+  function detect() {
+    if (window.storage && typeof window.storage.get === 'function') { mode = 'claude'; return; }
+    try { localStorage.setItem('__t', '1'); localStorage.removeItem('__t'); mode = 'local'; } catch (e) { mode = 'memory'; }
+  }
+  async function load() {
+    detect();
+    try {
+      if (mode === 'claude') { try { const r = await window.storage.get(KEY, false); return r ? JSON.parse(r.value) : null; } catch (e) { return null; } }
+      if (mode === 'local') { const v = localStorage.getItem(KEY); return v ? JSON.parse(v) : null; }
+    } catch (e) { console.error(e); }
+    return mem ? JSON.parse(mem) : null;
+  }
+  async function writeOnce(s) {
+    if (mode === 'claude') { const r = await window.storage.set(KEY, s, false); if (!r) throw new Error('empty response'); }
+    else if (mode === 'local') localStorage.setItem(KEY, s);
+  }
+  async function save(d) {
+    pending = JSON.stringify(d);
+    if (busy) return;
+    busy = true;
+    while (pending !== null) {
+      const s = pending; pending = null; mem = s;
+      if (mode === 'memory') continue;
+      let ok = false;
+      for (const w of [0, 800, 2500]) {
+        if (w) await new Promise(r => setTimeout(r, w));
+        try { await writeOnce(s); ok = true; break; } catch (e) { console.warn('save retry', e && e.message); }
+      }
+      if (!ok) toast('기록을 저장하지 못했어요. 이 화면에서는 계속 쓸 수 있어요.');
+    }
+    busy = false;
+  }
+  return { load, save, get mode() { return mode; } };
+})();
+
+/* ---------- State ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9 };
+let data = { script: '', items: [], pos: 0, results: {}, stats: {}, settings: { ...DEFAULT_SETTINGS } };
+let view = 'script';
+let rec = null, listening = false, liveText = '', lastError = '';
+let saveTimer = null;
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => Store.save(data), 600); }
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 3200);
+}
+
+const SAMPLE = `right
+light
+think
+sink
+very
+berry
+sheep
+ship
+The rabbit ran across the road before the light turned red.
+I think the three of them will arrive on Thursday.
+She sells fresh vegetables at the village market every Friday.
+Could you leave the file on the left side of the desk?`;
+
+/* ---------- Text handling ---------- */
+const ABBR = new Set(['mr','mrs','ms','dr','prof','sr','jr','st','vs','etc','e.g','i.e','u.s','u.k','a.m','p.m','no','inc','ltd','co']);
+function splitItems(text) {
+  const out = [];
+  for (const line of text.replace(/\r/g, '').split(/\n+/)) {
+    const t = line.replace(/\s+/g, ' ').trim(); if (!t) continue;
+    let start = 0, m; const re = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+    while ((m = re.exec(t))) {
+      const end = m.index + m[0].length, rest = t.slice(end).trimStart();
+      if (rest && !/^["'“‘(\[]?[A-Z0-9]/.test(rest)) continue;
+      if (m[0][0] === '.') {
+        const w = ((t.slice(start, m.index).match(/([A-Za-z.]+)$/) || [''])[0]).replace(/^\.+/, '').toLowerCase();
+        if (ABBR.has(w) || /^[a-z]$/.test(w)) continue;
+      }
+      const s = t.slice(start, end).trim(); if (s) out.push(s); start = end;
+    }
+    const tail = t.slice(start).trim(); if (tail) out.push(tail);
+  }
+  return out;
+}
+// Tokens keep hyphenated parts separate so "well-known" matches "well known".
+function tokens(s) { return String(s || '').match(/[^\s\-–—]+[\-–—]?/g) || []; }
+const NUM = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen','twenty'];
+const ALIAS = { mr: 'mister', mrs: 'missus', dr: 'doctor', ok: 'okay' };
+function norm(w) {
+  let x = w.replace(/[’‘]/g, "'").toLowerCase().replace(/[^\p{L}\p{N}']/gu, '').replace(/^'+|'+$/g, '');
+  if (/^\d+$/.test(x) && +x <= 20) x = NUM[+x];
+  return ALIAS[x] || x;
+}
+function lcs(A, B) {
+  const n = A.length, m = B.length, dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const inA = Array(n).fill(false), inB = Array(m).fill(false);
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { inA[i] = inB[j] = true; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return { inA, inB };
+}
+
+/* ---------- Evaluate a reading ---------- */
+function evaluate(i, alts) {
+  const target = data.items[i];
+  const T = tokens(target), TN = T.map(norm);
+  const best = alts[0] || '';
+  const BN = tokens(best).map(norm);
+  const main = lcs(TN, BN);
+  const others = alts.slice(1).map(a => lcs(TN, tokens(a).map(norm)).inA);
+  const marks = TN.map((w, k) => {
+    if (!w) return 'skip';
+    if (main.inA[k]) return 'ok';
+    return others.some(o => o[k]) ? 'amb' : 'miss';
+  });
+  const real = marks.filter(m => m !== 'skip').length;
+  const ok = marks.filter(m => m === 'ok').length;
+  const amb = marks.filter(m => m === 'amb').length;
+  TN.forEach((w, k) => {
+    if (!w) return;
+    const s = data.stats[w] || (data.stats[w] = { word: T[k].replace(/[^\p{L}\p{N}'’\-]/gu, '').replace(/-$/, ''), tries: 0, miss: 0 });
+    s.tries++;
+    if (marks[k] === 'miss') s.miss++;
+    else if (marks[k] === 'amb') s.miss += 0.5;
+  });
+  data.results[i] = { heard: best, extra: main.inB, marks, score: real ? Math.round(ok / real * 100) : 0, ok, amb, real };
+  scheduleSave();
+}
+
+/* ---------- Speech recognition ---------- */
+function micBlocker() {
+  if (!SR) return '이 브라우저는 음성인식을 지원하지 않아요. 아이패드나 아이폰은 사파리, PC는 크롬이나 엣지에서 열어 주세요.';
+  if (!window.isSecureContext) return '음성인식은 https 주소에서만 돼요. GitHub Pages 주소로 열거나, PC에서는 http://localhost로 열어 주세요.';
+  return '';
+}
+const ERR = {
+  'not-allowed': '마이크 권한이 막혀 있어요. 주소창의 사이트 설정에서 마이크를 허용해 주세요. Claude 앱 미리보기에서는 마이크를 쓸 수 없을 수 있어요.',
+  'service-not-allowed': '음성인식을 쓸 수 없어요. 아이패드라면 설정 > 일반 > 키보드에서 받아쓰기를 켠 뒤 다시 시도해 주세요.',
+  'no-speech': '소리가 들리지 않았어요. 마이크 버튼을 누르고 바로 읽어 주세요.',
+  'audio-capture': '마이크를 찾지 못했어요. 다른 앱이 마이크를 쓰고 있는지 확인해 주세요.',
+  'network': '음성인식 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.',
+  'language-not-supported': '선택한 영어 종류를 이 기기에서 인식할 수 없어요. 연습 화면 아래에서 다른 영어를 골라 주세요.'
+};
+function startListening() {
+  const block = micBlocker(); if (block) { toast(block); return; }
+  speechSynthesis && speechSynthesis.cancel();
+  const i = data.pos;
+  rec = new SR();
+  rec.lang = data.settings.lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = false;
+  let finals = null; liveText = ''; lastError = '';
+  rec.onresult = e => {
+    const res = Array.from(e.results);
+    liveText = res.map(r => r[0].transcript).join(' ').trim();
+    if (res.length && res.every(r => r.isFinal)) {
+      const maxAlt = Math.max(...res.map(r => r.length));
+      finals = [];
+      for (let k = 0; k < maxAlt; k++) finals.push(res.map(r => (r[k] || r[0]).transcript).join(' ').trim());
+    }
+    const el = $('#live'); if (el) { el.textContent = liveText || '듣는 중…'; }
+  };
+  rec.onerror = e => { lastError = ERR[e.error] || (e.error === 'aborted' ? '' : `음성인식 오류: ${e.error}`); };
+  rec.onend = () => {
+    listening = false; rec = null;
+    if (!finals && liveText) finals = [liveText];
+    if (finals && finals[0]) evaluate(i, [...new Set(finals.filter(Boolean))]);
+    else if (lastError) toast(lastError);
+    else toast('인식된 말이 없어요. 다시 한 번 읽어 주세요.');
+    if (view === 'practice') render();
+  };
+  try { rec.start(); listening = true; render(); }
+  catch (e) { listening = false; toast('음성인식을 시작하지 못했어요. 잠시 후 다시 눌러 주세요.'); }
+}
+function stopListening() { if (rec) rec.stop(); }
+
+/* ---------- Text to speech for the model reading ---------- */
+function speak(text) {
+  if (!('speechSynthesis' in window)) { toast('이 브라우저는 원문 읽어 주기를 지원하지 않아요.'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = data.settings.lang; u.rate = data.settings.ttsRate;
+  const v = speechSynthesis.getVoices().find(v => v.lang && v.lang.replace('_', '-') === data.settings.lang);
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+/* ---------- Views ---------- */
+function renderScript() {
+  const block = micBlocker();
+  return `${block ? `<div class="notice">${esc(block)}</div>` : ''}
+    <h1>읽을 스크립트</h1>
+    <p class="muted">영어 글을 붙여넣으면 문장 단위로 나눠요. 단어 하나씩 시험하려면 한 줄에 하나씩 적으세요. 문맥이 없을수록 판정이 엄격해져요.</p>
+    <label class="f" for="script">스크립트</label>
+    <textarea id="script" lang="en" spellcheck="false" placeholder="여기에 영어 문장이나 단어를 붙여넣으세요">${esc(data.script)}</textarea>
+    <div class="row" style="margin-top:16px">
+      <button class="btn primary" data-act="start">연습 시작</button>
+      <button class="btn" data-act="sample">예시 불러오기</button>
+    </div>
+    ${data.items.length ? `<p class="muted small" style="margin-top:12px">새로 시작하면 지금 연습 중인 ${data.items.length}개 항목의 결과가 지워져요. 약한 단어 기록은 남아요.</p>` : ''}`;
+}
+
+function targetHTML(i) {
+  const T = tokens(data.items[i]), r = data.results[i];
+  return T.map((w, k) => {
+    const cls = r ? (r.marks[k] === 'miss' ? 'miss' : r.marks[k] === 'amb' ? 'amb' : '') : '';
+    const sep = /[\-–—]$/.test(w) || k === T.length - 1 ? '' : ' ';
+    return `<span class="w ${cls}">${esc(w)}</span>${sep}`;
+  }).join('');
+}
+function heardHTML(r) {
+  const H = tokens(r.heard);
+  return H.map((w, k) => (r.extra && r.extra[k] === false && norm(w)) ? `<span class="extra">${esc(w)}</span>` : esc(w)).join(' ');
+}
+function renderPractice() {
+  if (!data.items.length) return `<h1>연습할 스크립트가 없어요</h1><p class="muted">먼저 읽을 문장이나 단어를 넣어 주세요.</p>
+    <button class="btn primary" data-act="go" data-to="script">스크립트 넣기</button>`;
+  const i = data.pos, r = data.results[i], block = micBlocker();
+  let heard;
+  if (listening) heard = `<span class="lbl">인식 중</span><span class="txt live" id="live" aria-live="polite">${esc(liveText) || '듣는 중…'}</span>`;
+  else if (r) heard = `<span class="lbl">기기가 들은 말</span><span class="txt" lang="en">${heardHTML(r)}</span>
+      <div class="verdict"><span><b>${r.score}%</b> 그대로 인식됨</span><span>${r.real}개 단어 중 ${r.ok}개 일치${r.amb ? `, 애매 ${r.amb}개` : ''}</span></div>`;
+  else heard = `<span class="lbl">기기가 들은 말</span><span class="txt live">마이크 버튼을 누르고 위 문장을 읽어 주세요.</span>`;
+  const items = data.items.map((t, k) => {
+    const rr = data.results[k];
+    const s = rr ? `<span class="s ${rr.score >= 90 ? 'good' : rr.score < 60 ? 'bad' : ''}">${rr.score}%</span>` : '<span class="s">—</span>';
+    return `<button class="it" data-act="jump" data-i="${k}" ${k === i ? 'aria-current="true"' : ''}><span class="n">${k + 1}</span><span class="t" lang="en">${esc(t)}</span>${s}</button>`;
+  }).join('');
+  return `${block ? `<div class="notice">${esc(block)}</div>` : ''}
+    <div class="progress"><span>${i + 1} / ${data.items.length}</span><span>${langName(data.settings.lang)}</span></div>
+    <div class="sheet">
+      <p class="target" lang="en">${targetHTML(i)}</p>
+      <div class="heard">${heard}</div>
+      ${r && !listening ? `<div class="legend"><span><span class="miss">물결 밑줄</span> 다르게 인식된 단어</span><span><span class="amb">형광펜</span> 다른 후보로는 맞게 들린 단어</span></div>` : ''}
+    </div>
+    <button class="mic ${listening ? 'on' : ''}" data-act="mic" aria-pressed="${listening}"><span class="dot" aria-hidden="true"></span>${listening ? '다 읽었으면 누르기' : (r ? '다시 읽기' : '읽기 시작')}</button>
+    <div class="nav3">
+      <button class="btn" data-act="prev" ${i === 0 ? 'disabled' : ''}>이전</button>
+      <button class="btn" data-act="speak">원문 듣기</button>
+      <button class="btn" data-act="next" ${i === data.items.length - 1 ? 'disabled' : ''}>다음</button>
+    </div>
+    <p class="muted small" style="margin-top:12px">맞게 인식됐다고 발음이 완벽하다는 뜻은 아니에요. 다르게 인식된 단어를 원문 듣기와 비교해 보세요.</p>
+    <h2>설정</h2>
+    <div class="panel">
+      <label class="setting"><span>인식할 영어</span><select data-setting="lang">
+        ${[['en-US', '미국 영어'], ['en-GB', '영국 영어'], ['en-AU', '호주 영어'], ['en-CA', '캐나다 영어']].map(([v, n]) => `<option value="${v}" ${data.settings.lang === v ? 'selected' : ''}>${n}</option>`).join('')}
+      </select></label>
+      <label class="setting"><span>원문 읽어 주는 속도</span><select data-setting="ttsRate">
+        ${[[0.7, '느리게'], [0.9, '조금 느리게'], [1, '보통']].map(([v, n]) => `<option value="${v}" ${data.settings.ttsRate === v ? 'selected' : ''}>${n}</option>`).join('')}
+      </select></label>
+    </div>
+    <h2>전체 항목</h2>
+    <div class="items">${items}</div>`;
+}
+function langName(l) { return { 'en-US': '미국 영어로 인식', 'en-GB': '영국 영어로 인식', 'en-AU': '호주 영어로 인식', 'en-CA': '캐나다 영어로 인식' }[l] || l; }
+
+function renderWeak() {
+  const list = Object.values(data.stats).filter(s => s.miss > 0)
+    .map(s => ({ ...s, rate: s.miss / s.tries }))
+    .sort((a, b) => b.rate - a.rate || b.miss - a.miss).slice(0, 40);
+  if (!list.length) return `<h1>약한 단어</h1><p class="muted">아직 다르게 인식된 단어가 없어요. 연습을 하면 자주 틀리게 들리는 단어가 여기에 모여요.</p>`;
+  return `<h1>약한 단어</h1>
+    <p class="muted">자주 다르게 인식된 단어예요. 애매하게 들린 경우는 절반만 셌어요.</p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn primary" data-act="drill">상위 10개 단어로 연습</button>
+      <button class="btn quiet danger" data-act="clear-stats">기록 지우기</button>
+    </div>
+    <div class="panel">${list.map(s => `<div class="weak"><span class="word" lang="en">${esc(s.word)}</span>
+      <span class="bar" aria-hidden="true"><i style="width:${Math.round(s.rate * 100)}%"></i></span>
+      <span class="cnt">${s.tries}번 중 ${fmtN(s.miss)}번</span></div>`).join('')}</div>`;
+}
+const fmtN = n => Number.isInteger(n) ? n : n.toFixed(1);
+
+function render() {
+  $('#main').innerHTML = view === 'practice' ? renderPractice() : view === 'weak' ? renderWeak() : renderScript();
+  document.querySelectorAll('nav button').forEach(b => {
+    if (b.dataset.to === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+}
+function go(v) { if (listening) stopListening(); view = v; render(); window.scrollTo(0, 0); }
+
+/* ---------- Actions ---------- */
+function startScript(text) {
+  const items = splitItems(text);
+  if (!items.length) { toast('먼저 읽을 영어 문장이나 단어를 넣어 주세요.'); return; }
+  data.script = text; data.items = items; data.pos = 0; data.results = {};
+  scheduleSave(); go('practice');
+}
+const actions = {
+  go: el => go(el.dataset.to),
+  start: () => startScript($('#script').value),
+  sample: () => { $('#script').value = SAMPLE; data.script = SAMPLE; scheduleSave(); },
+  mic: () => listening ? stopListening() : startListening(),
+  prev: () => { if (listening) stopListening(); data.pos = Math.max(0, data.pos - 1); scheduleSave(); render(); },
+  next: () => { if (listening) stopListening(); data.pos = Math.min(data.items.length - 1, data.pos + 1); scheduleSave(); render(); },
+  jump: el => { if (listening) stopListening(); data.pos = +el.dataset.i; scheduleSave(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+  speak: () => speak(data.items[data.pos]),
+  drill: () => {
+    const words = Object.values(data.stats).filter(s => s.miss > 0)
+      .sort((a, b) => b.miss / b.tries - a.miss / a.tries || b.miss - a.miss).slice(0, 10).map(s => s.word);
+    startScript(words.join('\n'));
+  },
+  'clear-stats': () => { data.stats = {}; scheduleSave(); render(); toast('약한 단어 기록을 지웠어요.'); }
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  const fn = actions[el.dataset.act]; if (fn) { e.preventDefault(); fn(el); }
+});
+document.addEventListener('input', e => { if (e.target.id === 'script') { data.script = e.target.value; scheduleSave(); } });
+document.addEventListener('change', e => {
+  const k = e.target.dataset.setting; if (!k) return;
+  data.settings[k] = k === 'ttsRate' ? Number(e.target.value) : e.target.value;
+  scheduleSave(); if (view === 'practice') render();
+});
+document.addEventListener('keydown', e => {
+  if (view !== 'practice' || e.target.closest('textarea,select,input') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === ' ') { e.preventDefault(); actions.mic(); }
+  else if (e.key === 'ArrowLeft') actions.prev();
+  else if (e.key === 'ArrowRight') actions.next();
+  else if (e.key === 'p' || e.key === 'P') actions.speak();
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden && listening) stopListening(); });
+if ('speechSynthesis' in window) speechSynthesis.getVoices();
+
+/* ---------- Init ---------- */
+(async () => {
+  const d = await Store.load();
+  if (d) {
+    data = { ...data, ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) } };
+    data.pos = Math.min(Math.max(0, data.pos || 0), Math.max(0, data.items.length - 1));
+    if (data.items.length) view = 'practice';
+  }
+  render();
+})();
+</script>
+</body>
+</html>
