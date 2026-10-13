@@ -181,12 +181,14 @@ const Store = (() => {
 
 /* ---------- State ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9 };
+const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9, ttsProvider: 'browser', googleVoice: 'female' };
 let data = { script: '', items: [], pos: 0, results: {}, history: {}, stats: {}, settings: { ...DEFAULT_SETTINGS } };
 let view = 'script';
 let rec = null, listening = false, liveText = '', lastError = '';
 let saveTimer = null;
 let focusWord = null, focusResult = null; // temporary word-only drill
+let googleTtsKey = ''; // 메모리에서만 사용, 영구 저장하지 않음
+let ttsAudio = null, ttsUrl = null, ttsRequest = null, ttsSeq = 0;
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -345,15 +347,76 @@ function startListening() {
 }
 function stopListening() { if (rec) rec.stop(); }
 
-/* ---------- Text to speech for the model reading ---------- */
-function speak(text) {
+/* ---------- Text to speech: Google Cloud or native browser ---------- */
+function stopTts() {
+  ++ttsSeq;
+  if (ttsRequest) { ttsRequest.abort(); ttsRequest = null; }
+  if (ttsAudio) { ttsAudio.pause(); ttsAudio.removeAttribute('src'); ttsAudio.load(); ttsAudio = null; }
+  if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; }
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
+function browserSpeak(text) {
   if (!('speechSynthesis' in window)) { toast('이 브라우저는 원문 읽어 주기를 지원하지 않아요.'); return; }
-  speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = data.settings.lang; u.rate = data.settings.ttsRate;
   const v = speechSynthesis.getVoices().find(v => v.lang && v.lang.replace('_', '-') === data.settings.lang);
   if (v) u.voice = v;
   speechSynthesis.speak(u);
+}
+function googleVoiceName() {
+  const lang = data.settings.lang;
+  const voices = {
+    'en-US': ['en-US-Neural2-F','en-US-Neural2-D'],
+    'en-GB': ['en-GB-Neural2-A','en-GB-Neural2-B'],
+    'en-AU': ['en-AU-Neural2-A','en-AU-Neural2-B'],
+    'en-CA': ['en-CA-Standard-A','en-CA-Standard-B']
+  };
+  const options = voices[lang] || voices['en-US'];
+  return options[data.settings.googleVoice === 'male' ? 1 : 0];
+}
+async function speak(text) {
+  stopTts();
+  if (data.settings.ttsProvider !== 'google') { browserSpeak(text); return; }
+  if (!googleTtsKey.trim()) { toast('Google Cloud API 키를 입력해 주세요.'); return; }
+  const seq = ttsSeq;
+  const controller = new AbortController(); ttsRequest = controller;
+  toast('Google 음성을 불러오는 중…');
+  try {
+    const resp = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': googleTtsKey.trim() },
+      body: JSON.stringify({
+        input: { text },
+        voice: { languageCode: data.settings.lang, name: googleVoiceName() },
+        audioConfig: { audioEncoding: 'MP3', speakingRate: data.settings.ttsRate }
+      }), signal: controller.signal
+    });
+    const json = await resp.json();
+    if (!resp.ok) throw new Error(json?.error?.message || `HTTP ${resp.status}`);
+    if (!json.audioContent) throw new Error('Google 응답에 음성 데이터가 없습니다.');
+    if (seq !== ttsSeq) return;
+    const raw = atob(json.audioContent);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    ttsUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+    ttsAudio = new Audio(ttsUrl);
+    ttsAudio.onended = () => { if (seq === ttsSeq) stopTts(); };
+    ttsAudio.onerror = () => { if (seq === ttsSeq) toast('음성 파일을 재생하지 못했어요.'); };
+    const playPromise = ttsAudio.play();
+    if (playPromise) await playPromise;
+  } catch (e) {
+    if (e.name === 'AbortError' || seq !== ttsSeq) return;
+    const errorText = String(e.message || e);
+    toast(errorText.includes('Failed to fetch') || errorText.includes('Load failed')
+      ? 'Google API 연결 실패: 네트워크, API 키 제한 또는 브라우저 접근 정책을 확인해 주세요.'
+      : 'Google 음성 오류: ' + errorText.slice(0, 180));
+    if (ttsAudio && ttsAudio.paused && ttsAudio.src) {
+      const panel = document.getElementById('google-audio-fallback');
+      if (panel) { panel.innerHTML = ''; panel.append(ttsAudio); ttsAudio.controls = true; panel.hidden = false; }
+    }
+  } finally {
+    if (seq === ttsSeq) ttsRequest = null;
+  }
 }
 
 /* ---------- Views ---------- */
@@ -424,8 +487,23 @@ function renderPractice() {
       <button class="btn" data-act="next" ${i === data.items.length - 1 ? 'disabled' : ''}>다음</button>
     </div>
     <p class="muted small" style="margin-top:12px">맞게 인식됐다고 발음이 완벽하다는 뜻은 아니에요. 다르게 인식된 단어를 원문 듣기와 비교해 보세요.</p>
+    <div id="google-audio-fallback" hidden aria-label="Google 음성 수동 재생"></div>
     <h2>설정</h2>
     <div class="panel">
+      <label class="setting"><span>원문 음성 엔진</span><select data-setting="ttsProvider">
+        <option value="browser" ${data.settings.ttsProvider === 'browser' ? 'selected' : ''}>브라우저 기본 음성</option>
+        <option value="google" ${data.settings.ttsProvider === 'google' ? 'selected' : ''}>Google Cloud TTS</option>
+      </select></label>
+      ${data.settings.ttsProvider === 'google' ? `<div class="tts-config">
+        <label class="f" for="google-tts-key">Google Cloud Text-to-Speech API 키</label>
+        <input id="google-tts-key" type="password" autocomplete="off" spellcheck="false" placeholder="API 키 입력 (현재 탭에서만 유지)" value="${esc(googleTtsKey)}" style="width:100%;min-height:44px;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:9px;color:var(--ink);font:inherit">
+        <p class="muted small" style="margin:6px 0 12px">키는 저장되지 않으며 페이지를 새로 열면 다시 입력해야 합니다. 공개·공유 기기에서는 사용하지 마세요. 공개 사이트에 키를 코드로 삽입하면 안 됩니다.</p>
+        <label class="setting"><span>Google 음성</span><select data-setting="googleVoice">
+          <option value="female" ${data.settings.googleVoice === 'female' ? 'selected' : ''}>여성 음성</option>
+          <option value="male" ${data.settings.googleVoice === 'male' ? 'selected' : ''}>남성 음성</option>
+        </select></label>
+        <p class="muted small">Google Cloud 프로젝트에서 Text-to-Speech API와 결제를 활성화해야 합니다. API 사용량에 따라 요금이 발생할 수 있습니다. iPad Safari에서 자동 재생이 차단되면 표시되는 오디오 플레이어를 눌러 재생하세요.</p>
+      </div>` : ''}
       <label class="setting"><span>인식할 영어</span><select data-setting="lang">
         ${[['en-US', '미국 영어'], ['en-GB', '영국 영어'], ['en-AU', '호주 영어'], ['en-CA', '캐나다 영어']].map(([v, n]) => `<option value="${v}" ${data.settings.lang === v ? 'selected' : ''}>${n}</option>`).join('')}
       </select></label>
@@ -498,6 +576,7 @@ document.addEventListener('input', e => { if (e.target.id === 'script') { data.s
 document.addEventListener('change', e => {
   const k = e.target.dataset.setting; if (!k) return;
   data.settings[k] = k === 'ttsRate' ? Number(e.target.value) : e.target.value;
+  if (k === 'ttsProvider' || k === 'googleVoice' || k === 'lang') stopTts();
   scheduleSave(); if (view === 'practice') render();
 });
 document.addEventListener('keydown', e => {
