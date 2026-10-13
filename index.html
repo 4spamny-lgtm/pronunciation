@@ -100,6 +100,19 @@ textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 .it .s.good{color:var(--ok)} .it .s.bad{color:var(--pen)}
 .it[aria-current="true"]{background:var(--surface)}
 
+/* More accessible word drill, reading history, and touch-friendly layouts */
+.word-button{border:0;background:none;font:inherit;font-family:inherit;color:inherit;cursor:pointer;border-radius:3px;padding:0 .02em}
+.word-button:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.summary-strip{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:.88rem;color:var(--muted);margin:0 0 9px}
+.summary-strip b{color:var(--ink)}
+.progress-track{height:6px;background:var(--line);border-radius:6px;overflow:hidden;margin-bottom:16px}
+.progress-track i{display:block;height:100%;background:var(--ok)}
+.focus-panel,.history{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:12px}
+.focus-panel p{margin:8px 0}
+.history-entries{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.history-pill{background:var(--field);border:1px solid var(--line);border-radius:20px;padding:3px 9px;font-variant-numeric:tabular-nums}
+@media(max-width:540px){main{padding:14px 12px 70px}.sheet{padding:18px 14px}.target{font-size:clamp(1.35rem,6vw,1.85rem)}.mic{min-height:60px;position:sticky;bottom:calc(env(safe-area-inset-bottom) + 8px);z-index:5;box-shadow:0 4px 15px rgba(0,0,0,.14)}.nav3{gap:6px}.nav3 .btn{padding:10px 4px}.weak{grid-template-columns:minmax(72px,auto) 1fr auto;gap:6px}.it{gap:7px}.it .t{min-width:0}}
+
 /* Weak words */
 .weak{display:grid;grid-template-columns:minmax(90px,auto) 1fr auto;gap:6px 14px;align-items:center;
   padding:12px 0;border-top:1px solid var(--line)}
@@ -169,10 +182,11 @@ const Store = (() => {
 /* ---------- State ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const DEFAULT_SETTINGS = { lang: 'en-US', ttsRate: 0.9 };
-let data = { script: '', items: [], pos: 0, results: {}, stats: {}, settings: { ...DEFAULT_SETTINGS } };
+let data = { script: '', items: [], pos: 0, results: {}, history: {}, stats: {}, settings: { ...DEFAULT_SETTINGS } };
 let view = 'script';
 let rec = null, listening = false, liveText = '', lastError = '';
 let saveTimer = null;
+let focusWord = null, focusResult = null; // temporary word-only drill
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -225,43 +239,61 @@ function norm(w) {
   if (/^\d+$/.test(x) && +x <= 20) x = NUM[+x];
   return ALIAS[x] || x;
 }
-function lcs(A, B) {
-  const n = A.length, m = B.length, dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
-    dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const inA = Array(n).fill(false), inB = Array(m).fill(false);
-  let i = 0, j = 0;
-  while (i < n && j < m) {
-    if (A[i] === B[j]) { inA[i] = inB[j] = true; i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+// Minimum edit-distance alignment: identifies exact matches, substitutions, omissions, and insertions.
+function alignWords(A, B) {
+  const n = A.length, m = B.length;
+  const dp = Array.from({length:n+1}, () => Array(m+1).fill(0));
+  for (let i=0;i<=n;i++) dp[i][0]=i;
+  for (let j=0;j<=m;j++) dp[0][j]=j;
+  for (let i=1;i<=n;i++) for (let j=1;j<=m;j++) {
+    dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(A[i-1]===B[j-1]?0:1));
   }
-  return { inA, inB };
+  const marks=Array(n).fill('miss'), heardMarks=Array(m).fill('extra'), replacements=Array(n).fill('');
+  let i=n,j=m;
+  while(i>0 || j>0) {
+    if(i>0 && j>0 && A[i-1]===B[j-1] && dp[i][j]===dp[i-1][j-1]) {
+      marks[--i]='ok'; heardMarks[--j]='ok';
+    } else if(i>0 && j>0 && dp[i][j]===dp[i-1][j-1]+1) {
+      marks[--i]='replace'; replacements[i]=B[j-1]; heardMarks[--j]='replace';
+    } else if(i>0 && dp[i][j]===dp[i-1][j]+1) {
+      marks[--i]='miss';
+    } else { heardMarks[--j]='extra'; }
+  }
+  return {marks, heardMarks, replacements};
 }
-
-/* ---------- Evaluate a reading ---------- */
+function trackWords(T, marks) {
+  T.forEach((w,k) => {
+    const key=norm(w); if(!key)return;
+    const stat=data.stats[key]||(data.stats[key]={word:w.replace(/[^\p{L}\p{N}'’\-]/gu,'').replace(/-$/,''),tries:0,miss:0});
+    stat.tries++;
+    if(marks[k]==='amb')stat.miss+=0.5;
+    else if(marks[k]!=='ok')stat.miss++;
+  });
+}
+function scoreReading(target, alts) {
+  const T=tokens(target), TN=T.map(norm), best=alts[0]||'';
+  const primary=alignWords(TN,tokens(best).map(norm));
+  const others=alts.slice(1).map(a=>alignWords(TN,tokens(a).map(norm)).marks);
+  const marks=primary.marks.map((m,k)=>m!=='ok'&&others.some(a=>a[k]==='ok')?'amb':m);
+  const real=TN.filter(Boolean).length, ok=marks.filter(m=>m==='ok').length, amb=marks.filter(m=>m==='amb').length;
+  // Extra recognized words reduce the score instead of being silently ignored.
+  const extras=primary.heardMarks.filter(m=>m==='extra').length;
+  const score=(real+extras)?Math.round(ok/(real+extras)*100):0;
+  return {heard:best,heardMarks:primary.heardMarks,marks,replacements:primary.replacements,
+    score,ok,amb,real, extras,
+    omitted:marks.filter(m=>m==='miss').length, substituted:marks.filter(m=>m==='replace').length};
+}
 function evaluate(i, alts) {
-  const target = data.items[i];
-  const T = tokens(target), TN = T.map(norm);
-  const best = alts[0] || '';
-  const BN = tokens(best).map(norm);
-  const main = lcs(TN, BN);
-  const others = alts.slice(1).map(a => lcs(TN, tokens(a).map(norm)).inA);
-  const marks = TN.map((w, k) => {
-    if (!w) return 'skip';
-    if (main.inA[k]) return 'ok';
-    return others.some(o => o[k]) ? 'amb' : 'miss';
-  });
-  const real = marks.filter(m => m !== 'skip').length;
-  const ok = marks.filter(m => m === 'ok').length;
-  const amb = marks.filter(m => m === 'amb').length;
-  TN.forEach((w, k) => {
-    if (!w) return;
-    const s = data.stats[w] || (data.stats[w] = { word: T[k].replace(/[^\p{L}\p{N}'’\-]/gu, '').replace(/-$/, ''), tries: 0, miss: 0 });
-    s.tries++;
-    if (marks[k] === 'miss') s.miss++;
-    else if (marks[k] === 'amb') s.miss += 0.5;
-  });
-  data.results[i] = { heard: best, extra: main.inB, marks, score: real ? Math.round(ok / real * 100) : 0, ok, amb, real };
+  const r=scoreReading(data.items[i],alts);
+  trackWords(tokens(data.items[i]),r.marks);
+  const history=data.history||(data.history={});
+  (history[i]||(history[i]=[])).push({score:r.score,ok:r.ok,real:r.real,at:Date.now()});
+  data.results[i]=r;
+  scheduleSave();
+}
+function evaluateFocus(word,alts){
+  focusResult=scoreReading(word,alts);
+  trackWords(tokens(word),focusResult.marks);
   scheduleSave();
 }
 
@@ -282,7 +314,7 @@ const ERR = {
 function startListening() {
   const block = micBlocker(); if (block) { toast(block); return; }
   speechSynthesis && speechSynthesis.cancel();
-  const i = data.pos;
+  const i = data.pos, activeWord = focusWord;
   rec = new SR();
   rec.lang = data.settings.lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = false;
   let finals = null; liveText = ''; lastError = '';
@@ -300,7 +332,10 @@ function startListening() {
   rec.onend = () => {
     listening = false; rec = null;
     if (!finals && liveText) finals = [liveText];
-    if (finals && finals[0]) evaluate(i, [...new Set(finals.filter(Boolean))]);
+    if (finals && finals[0]) {
+      const candidates=[...new Set(finals.filter(Boolean))];
+      if(activeWord) evaluateFocus(activeWord,candidates); else evaluate(i,candidates);
+    }
     else if (lastError) toast(lastError);
     else toast('인식된 말이 없어요. 다시 한 번 읽어 주세요.');
     if (view === 'practice') render();
@@ -339,23 +374,32 @@ function renderScript() {
 function targetHTML(i) {
   const T = tokens(data.items[i]), r = data.results[i];
   return T.map((w, k) => {
-    const cls = r ? (r.marks[k] === 'miss' ? 'miss' : r.marks[k] === 'amb' ? 'amb' : '') : '';
+    const mark=r?.marks[k]||'';
+    const cls=mark==='amb'?'amb':(mark && mark!=='ok'?'miss':'');
     const sep = /[\-–—]$/.test(w) || k === T.length - 1 ? '' : ' ';
-    return `<span class="w ${cls}">${esc(w)}</span>${sep}`;
+    return cls ? `<button type="button" class="w word-button ${cls}" data-act="focus" data-k="${k}" title="이 단어만 연습">${esc(w)}</button>${sep}`
+      : `<span class="w">${esc(w)}</span>${sep}`;
   }).join('');
 }
 function heardHTML(r) {
   const H = tokens(r.heard);
-  return H.map((w, k) => (r.extra && r.extra[k] === false && norm(w)) ? `<span class="extra">${esc(w)}</span>` : esc(w)).join(' ');
+  return H.map((w,k)=>(r.heardMarks?.[k]==='extra'||r.heardMarks?.[k]==='replace')?`<span class="extra">${esc(w)}</span>`:esc(w)).join(' ');
 }
 function renderPractice() {
   if (!data.items.length) return `<h1>연습할 스크립트가 없어요</h1><p class="muted">먼저 읽을 문장이나 단어를 넣어 주세요.</p>
     <button class="btn primary" data-act="go" data-to="script">스크립트 넣기</button>`;
   const i = data.pos, r = data.results[i], block = micBlocker();
+  const completed=Object.keys(data.results).filter(k=>Number(k)<data.items.length).length;
+  const scores=Object.values(data.results).map(r=>r.score);
+  const average=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):null;
+  const history=data.history?.[i]||[];
+  const focusPanel=focusWord ? `<div class="focus-panel" aria-live="polite"><div class="row"><b lang="en">${esc(focusWord)}</b><span class="small muted">단어 집중 연습</span></div>
+      ${focusResult?`<p class="small">인식 결과: <b lang="en">${esc(focusResult.heard)}</b> · ${focusResult.score===100?'일치':'다르게 인식됨'}</p>`:''}
+      <div class="row"><button class="btn" data-act="focus-speak">단어 듣기</button><button class="btn primary" data-act="focus-mic">${listening?'녹음 종료':'단어만 읽기'}</button><button class="btn quiet" data-act="focus-close">닫기</button></div></div>`:'';
   let heard;
   if (listening) heard = `<span class="lbl">인식 중</span><span class="txt live" id="live" aria-live="polite">${esc(liveText) || '듣는 중…'}</span>`;
   else if (r) heard = `<span class="lbl">기기가 들은 말</span><span class="txt" lang="en">${heardHTML(r)}</span>
-      <div class="verdict"><span><b>${r.score}%</b> 그대로 인식됨</span><span>${r.real}개 단어 중 ${r.ok}개 일치${r.amb ? `, 애매 ${r.amb}개` : ''}</span></div>`;
+      <div class="verdict"><span><b>${r.score}%</b> 그대로 인식됨</span><span>${r.real}개 중 일치 ${r.ok}, 애매 ${r.amb}, 대체 ${r.substituted||0}, 누락 ${r.omitted||0}, 추가 ${r.extras||0}</span></div>`;
   else heard = `<span class="lbl">기기가 들은 말</span><span class="txt live">마이크 버튼을 누르고 위 문장을 읽어 주세요.</span>`;
   const items = data.items.map((t, k) => {
     const rr = data.results[k];
@@ -364,11 +408,15 @@ function renderPractice() {
   }).join('');
   return `${block ? `<div class="notice">${esc(block)}</div>` : ''}
     <div class="progress"><span>${i + 1} / ${data.items.length}</span><span>${langName(data.settings.lang)}</span></div>
+    <div class="summary-strip"><span>완료 <b>${completed}/${data.items.length}</b></span><span>평균 일치율 <b>${average===null?'—':average+'%'}</b></span><span>재연습 대상 <b>${scores.filter(s=>s<90).length}</b></span></div>
+    <div class="progress-track" role="progressbar" aria-label="연습 완료율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(completed/data.items.length*100)}"><i style="width:${completed/data.items.length*100}%"></i></div>
     <div class="sheet">
       <p class="target" lang="en">${targetHTML(i)}</p>
       <div class="heard">${heard}</div>
       ${r && !listening ? `<div class="legend"><span><span class="miss">물결 밑줄</span> 다르게 인식된 단어</span><span><span class="amb">형광펜</span> 다른 후보로는 맞게 들린 단어</span></div>` : ''}
     </div>
+    ${focusPanel}
+    ${history.length?`<div class="history small"><b>이 문장 연습 기록 (${history.length}회)</b><div class="history-entries">${history.slice(-8).map((h,k)=>`<span class="history-pill">${Math.max(1,history.length-7)+k}회 ${h.score}%</span>`).join('')}</div><span class="muted">최초 ${history[0].score}% → 최근 ${history[history.length-1].score}% (${history[history.length-1].score-history[0].score>=0?'+':''}${history[history.length-1].score-history[0].score}%p)</span></div>`:''}
     <button class="mic ${listening ? 'on' : ''}" data-act="mic" aria-pressed="${listening}"><span class="dot" aria-hidden="true"></span>${listening ? '다 읽었으면 누르기' : (r ? '다시 읽기' : '읽기 시작')}</button>
     <div class="nav3">
       <button class="btn" data-act="prev" ${i === 0 ? 'disabled' : ''}>이전</button>
@@ -413,23 +461,27 @@ function render() {
     if (b.dataset.to === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
 }
-function go(v) { if (listening) stopListening(); view = v; render(); window.scrollTo(0, 0); }
+function go(v) { focusWord=null; focusResult=null; if (listening) stopListening(); view = v; render(); window.scrollTo(0, 0); }
 
 /* ---------- Actions ---------- */
 function startScript(text) {
   const items = splitItems(text);
   if (!items.length) { toast('먼저 읽을 영어 문장이나 단어를 넣어 주세요.'); return; }
-  data.script = text; data.items = items; data.pos = 0; data.results = {};
+  data.script = text; data.items = items; data.pos = 0; data.results = {}; data.history = {}; focusWord=null; focusResult=null;
   scheduleSave(); go('practice');
 }
 const actions = {
   go: el => go(el.dataset.to),
   start: () => startScript($('#script').value),
   sample: () => { $('#script').value = SAMPLE; data.script = SAMPLE; scheduleSave(); },
-  mic: () => listening ? stopListening() : startListening(),
-  prev: () => { if (listening) stopListening(); data.pos = Math.max(0, data.pos - 1); scheduleSave(); render(); },
-  next: () => { if (listening) stopListening(); data.pos = Math.min(data.items.length - 1, data.pos + 1); scheduleSave(); render(); },
-  jump: el => { if (listening) stopListening(); data.pos = +el.dataset.i; scheduleSave(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+  mic: () => { if(listening)stopListening(); else {focusWord=null;focusResult=null;startListening();} },
+  focus: el => {if(listening)return;focusWord=tokens(data.items[data.pos])[+el.dataset.k].replace(/[^\p{L}\p{N}'’\-]/gu,'').replace(/-$/,'');focusResult=null;render();},
+  'focus-speak': () => {if(focusWord)speak(focusWord);},
+  'focus-mic': () => {if(listening)stopListening();else if(focusWord)startListening();},
+  'focus-close': () => {if(listening)stopListening();focusWord=null;focusResult=null;render();},
+  prev: () => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = Math.max(0, data.pos - 1); scheduleSave(); render(); },
+  next: () => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = Math.min(data.items.length - 1, data.pos + 1); scheduleSave(); render(); },
+  jump: el => { focusWord=null; focusResult=null; if (listening) stopListening(); data.pos = +el.dataset.i; scheduleSave(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); },
   speak: () => speak(data.items[data.pos]),
   drill: () => {
     const words = Object.values(data.stats).filter(s => s.miss > 0)
@@ -450,6 +502,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('keydown', e => {
   if (view !== 'practice' || e.target.closest('textarea,select,input') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.closest('button') || e.key==='Tab') return;
   if (e.key === ' ') { e.preventDefault(); actions.mic(); }
   else if (e.key === 'ArrowLeft') actions.prev();
   else if (e.key === 'ArrowRight') actions.next();
